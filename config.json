@@ -1,0 +1,19 @@
+{
+  "server": {
+    "port": 2333,
+    "host": "0.0.0.0"
+  },
+  "sites": [
+    {
+      "name": "skylive",
+      "hostname": "sky.example.com",
+      "target": "https://live.radiance.thatgamecompany.com",
+      "preserveHost": true,
+      "logging": true
+    }
+  ],
+  "logging": {
+    "dir": "./data",
+    "maxBodyLogSize": 1048576
+  }
+}
