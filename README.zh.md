@@ -1,15 +1,18 @@
 # that-sky-reverse-proxy
 
-Used for collecting Sky:CotL request data.
+用于采集 Sky:CotL 请求数据。
 
-基于 Node.js 的异步高性能反向代理，支持多站点配置，自动记录所有经过的请求与响应数据为结构化 JSON 文件。
+这是一个基于 Node.js 的反向代理，支持按域名多站点路由，并内置结构化日志系统。
 
 ## 功能特性
 
-- **多站点反向代理** — 通过 `config.json` 配置多个站点，基于请求 `Host` 头自动路由
-- **请求日志记录** — 每个请求自动生成结构化 JSON 文件，按站点名称分目录存储
-- **智能 Body 解析** — 自动识别 JSON / Text / Form / Binary 等格式，即使响应 `Content-Type` 为 `text/plain` 也会尝试解析 JSON 内容
-- **零外部依赖** — 仅使用 Node.js 内置模块，无需 `npm install`
+- 按请求 `Host` 做多站点反向代理
+- 流式转发请求与响应（支持 chunked body）
+- 每个站点输出结构化请求日志（`JSON`）
+- 系统事件日志（`NDJSON`，记录启动/关闭/路由未命中/错误）
+- `maxBodyLogSize` 控制 body 采集上限，并记录截断信息
+- 支持敏感请求头脱敏
+- 零第三方依赖
 
 ## 环境要求
 
@@ -18,11 +21,7 @@ Used for collecting Sky:CotL request data.
 ## 快速开始
 
 ```bash
-# 启动代理
 node index.js
-
-# 开发模式（文件变更自动重启）
-npm run dev
 ```
 
 ## 配置说明
@@ -33,7 +32,10 @@ npm run dev
 {
   "server": {
     "port": 2333,
-    "host": "0.0.0.0"
+    "host": "0.0.0.0",
+    "requestTimeoutMs": 30000,
+    "allowInsecureTls": false,
+    "trustProxyHeaders": false
   },
   "sites": [
     {
@@ -46,7 +48,10 @@ npm run dev
   ],
   "logging": {
     "dir": "./data",
-    "maxBodyLogSize": 1048576
+    "maxBodyLogSize": 1048576,
+    "prettyJson": true,
+    "console": true,
+    "redactHeaders": ["authorization", "cookie", "set-cookie"]
   }
 }
 ```
@@ -54,117 +59,111 @@ npm run dev
 ### 字段说明
 
 | 字段 | 说明 |
-|------|------|
-| `server.port` | 代理服务监听端口 |
-| `server.host` | 代理服务监听地址 |
-| `sites[].name` | 站点标识，用于日志目录划分 |
-| `sites[].hostname` | 匹配的请求 Host 头 |
-| `sites[].target` | 上游目标地址 |
-| `sites[].preserveHost` | `true` 时将 Host 头替换为上游地址的 host |
-| `sites[].logging` | 是否记录该站点的请求日志 |
-| `logging.dir` | 日志文件存储根目录 |
-| `logging.maxBodyLogSize` | 单个 Body 最大记录字节数 |
+|---|---|
+| `server.port` | 监听端口 |
+| `server.host` | 监听地址 |
+| `server.requestTimeoutMs` | 上游请求超时（毫秒） |
+| `server.allowInsecureTls` | `true` 时跳过 HTTPS 证书校验 |
+| `server.trustProxyHeaders` | `true` 时使用 `x-forwarded-proto` 生成 `full_url` |
+| `sites[].name` | 站点名，用于日志目录分区 |
+| `sites[].hostname` | 要匹配的 Host |
+| `sites[].target` | 上游地址（`http` 或 `https`） |
+| `sites[].preserveHost` | `true` 时将转发请求的 `Host` 改为上游 host |
+| `sites[].logging` | 是否记录该站点请求日志 |
+| `logging.dir` | 日志根目录 |
+| `logging.maxBodyLogSize` | 请求/响应 body 最大采集字节数 |
+| `logging.prettyJson` | 请求日志是否格式化输出 |
+| `logging.console` | 是否输出控制台事件日志 |
+| `logging.redactHeaders` | 需要脱敏的请求头字段名 |
 
-### 多站点配置示例
+## 日志系统
+
+请求日志路径：
+
+```text
+data/<site-name>/request_<path_slug>_<timestamp>_<request_id>.json
+```
+
+系统事件日志路径：
+
+```text
+data/_system/events_YYYYMMDD.ndjson
+```
+
+### 请求日志示例
 
 ```json
 {
-  "sites": [
-    {
-      "name": "skylive",
-      "hostname": "sky.example.com",
-      "target": "https://live.radiance.thatgamecompany.com",
-      "preserveHost": true,
-      "logging": true
-    },
-    {
-      "name": "skyassets",
-      "hostname": "assets.example.com",
-      "target": "https://assets.radiance.thatgamecompany.com",
-      "preserveHost": true,
-      "logging": true
-    }
-  ]
-}
-```
-
-## 日志格式
-
-日志文件按站点分目录存储，路径格式为：
-
-```
-data/<site.name>/request_<path_slug>_<timestamp>.json
-```
-
-例如：
-
-```
-data/skylive/request_root_20260223_150130_126823.json
-data/skylive/request_account_get_friends_20260223_120941_413967.json
-data/skylive/request_account_get_motd_20260411_203347_649000.json
-```
-
-### 日志文件结构
-
-```json
-{
-  "timestamp": "2026-02-23T12:09:41.414115",
-  "client_ip": "172.18.0.1",
+  "request_id": "ma7vv8w0-7e3d9f2a",
+  "timestamp": "2026-04-25T05:13:24.212Z",
+  "duration_ms": 149,
+  "client_ip": "127.0.0.1",
+  "site": {
+    "host": "sky.example.com",
+    "route_name": "skylive"
+  },
+  "upstream": {
+    "protocol": "https",
+    "hostname": "live.radiance.thatgamecompany.com",
+    "port": 443,
+    "target": "https://live.radiance.thatgamecompany.com/",
+    "tls_insecure_skip_verify": false
+  },
   "request": {
     "method": "POST",
     "path": "/account/get_friends",
-    "full_url": "https://sky.example.com/account/get_friends",
+    "full_url": "http://sky.example.com/account/get_friends",
     "query_params": {},
-    "headers": { "...": "..." },
+    "headers": {
+      "authorization": "[REDACTED]"
+    },
     "body": {
       "type": "json",
-      "data": { "...": "..." },
-      "size": 348
+      "data": {
+        "id": "..."
+      },
+      "size": 4096,
+      "logged_size": 1024,
+      "truncated": true,
+      "omitted_size": 3072
     }
   },
   "response": {
     "status_code": 200,
     "status_text": "OK",
-    "headers": { "...": "..." },
+    "headers": {},
     "body": {
       "type": "json",
-      "data": { "...": "..." },
-      "size": 19
+      "data": {
+        "ok": true
+      },
+      "size": 26,
+      "logged_size": 26,
+      "truncated": false,
+      "omitted_size": 0
     }
-  }
+  },
+  "traffic": {
+    "request_bytes": 4096,
+    "response_bytes": 26
+  },
+  "error": null
 }
 ```
 
-### Body 类型说明
+### Body 类型
 
 | type | 说明 |
-|------|------|
-| `empty` | 无请求/响应体 |
-| `json` | JSON 格式，`data` 为解析后的对象 |
-| `text` | 纯文本，`data` 为字符串 |
+|---|---|
+| `empty` | 无 body |
+| `json` | 解析后的 JSON |
+| `text` | 文本 |
 | `form` | URL 编码表单 |
-| `multipart` | Multipart 表单 |
-| `binary` | 二进制数据，`data` 为 Base64 编码字符串 |
-
-> 当 `Content-Type` 为 `text/plain` 但内容为合法 JSON 时，会自动识别并按 `json` 类型解析。
-
-## 项目结构
-
-```
-forte/
-├── index.js              # 入口文件，启动 HTTP 服务器
-├── config.json           # 代理配置
-├── package.json
-└── lib/
-    ├── proxy.js          # 核心反向代理逻辑
-    ├── router.js         # 基于 Host 头的站点路由
-    ├── logger.js         # 请求日志写入
-    ├── body-parser.js    # 请求/响应体解析
-    └── utils.js          # 工具函数
-```
+| `multipart` | Multipart 表单（原始文本片段） |
+| `binary` | Base64 编码二进制 |
 
 ## 使用方式
 
-1. 启动代理服务器
-2. 将客户端请求指向本代理（例如通过修改 DNS 或 hosts 将域名指向代理地址）
-3. 代理会自动将请求转发到配置的上游地址，并将完整的请求/响应数据记录到 `data/` 目录
+1. 启动代理服务。
+2. 将客户端请求指向该代理（DNS/hosts）。
+3. 在 `data/` 目录查看请求日志和 `_system` 事件日志。

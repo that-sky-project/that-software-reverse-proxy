@@ -1,7 +1,10 @@
 {
   "server": {
     "port": 2333,
-    "host": "0.0.0.0"
+    "host": "0.0.0.0",
+    "requestTimeoutMs": 30000,
+    "allowInsecureTls": false,
+    "trustProxyHeaders": false
   },
   "sites": [
     {
@@ -14,6 +17,13 @@
   ],
   "logging": {
     "dir": "./data",
-    "maxBodyLogSize": 1048576
+    "maxBodyLogSize": 1048576,
+    "prettyJson": true,
+    "console": true,
+    "redactHeaders": [
+      "authorization",
+      "cookie",
+      "set-cookie"
+    ]
   }
 }

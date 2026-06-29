@@ -2,14 +2,17 @@
 
 Used for collecting Sky:CotL request data.
 
-An async, high-performance reverse proxy built on Node.js with multi-site support. Automatically logs all proxied requests and responses as structured JSON files.
+An async reverse proxy built on Node.js with multi-site routing and structured logging.
 
 ## Features
 
-- **Multi-site Reverse Proxy** — Configure multiple sites via `config.json`, auto-routed by request `Host` header
-- **Request Logging** — Each request generates a structured JSON file, organized by site name
-- **Smart Body Parsing** — Auto-detects JSON / Text / Form / Binary formats; attempts JSON parsing even when `Content-Type` is `text/plain`
-- **Zero Dependencies** — Uses only Node.js built-in modules, no `npm install` required
+- Multi-site reverse proxy by request `Host`
+- Streaming request/response forwarding (works with chunked bodies)
+- Structured request logs per site (`JSON`)
+- System event logs (`NDJSON`) for startup, shutdown, routing misses, and errors
+- Body capture limit (`maxBodyLogSize`) with truncation metadata
+- Header redaction for sensitive fields
+- Zero external dependencies
 
 ## Requirements
 
@@ -18,11 +21,7 @@ An async, high-performance reverse proxy built on Node.js with multi-site suppor
 ## Quick Start
 
 ```bash
-# Start the proxy
 node index.js
-
-# Development mode (auto-restart on file change)
-npm run dev
 ```
 
 ## Configuration
@@ -33,20 +32,26 @@ Edit `config.json`:
 {
   "server": {
     "port": 2333,
-    "host": "0.0.0.0"
+    "host": "0.0.0.0",
+    "requestTimeoutMs": 30000,
+    "allowInsecureTls": false,
+    "trustProxyHeaders": false
   },
   "sites": [
     {
       "name": "skylive",
       "hostname": "sky.example.com",
-      "target": "https://live.example.com",
+      "target": "https://live.radiance.thatgamecompany.com",
       "preserveHost": true,
       "logging": true
     }
   ],
   "logging": {
     "dir": "./data",
-    "maxBodyLogSize": 1048576
+    "maxBodyLogSize": 1048576,
+    "prettyJson": true,
+    "console": true,
+    "redactHeaders": ["authorization", "cookie", "set-cookie"]
   }
 }
 ```
@@ -54,117 +59,111 @@ Edit `config.json`:
 ### Field Reference
 
 | Field | Description |
-|-------|-------------|
-| `server.port` | Port the proxy server listens on |
-| `server.host` | Address the proxy server binds to |
-| `sites[].name` | Site identifier, used for log directory partitioning |
-| `sites[].hostname` | Request Host header to match |
-| `sites[].target` | Upstream target URL |
-| `sites[].preserveHost` | When `true`, replaces the Host header with the upstream host |
-| `sites[].logging` | Whether to log requests for this site |
-| `logging.dir` | Root directory for log file storage |
-| `logging.maxBodyLogSize` | Maximum body size to log (bytes) |
+|---|---|
+| `server.port` | Listening port |
+| `server.host` | Listening host |
+| `server.requestTimeoutMs` | Upstream request timeout in ms |
+| `server.allowInsecureTls` | If `true`, skip TLS certificate verification for HTTPS upstream |
+| `server.trustProxyHeaders` | If `true`, use `x-forwarded-proto` to build `full_url` |
+| `sites[].name` | Site name, used as log directory key |
+| `sites[].hostname` | Host header to match |
+| `sites[].target` | Upstream URL (`http` or `https`) |
+| `sites[].preserveHost` | If `true`, replace outgoing `Host` with upstream host |
+| `sites[].logging` | Enable or disable request logs for this site |
+| `logging.dir` | Log root directory |
+| `logging.maxBodyLogSize` | Max captured bytes for request/response body logging |
+| `logging.prettyJson` | Pretty-print request log files |
+| `logging.console` | Enable console event output |
+| `logging.redactHeaders` | Header names to redact in logs |
 
-### Multi-site Example
+## Logging
+
+Request logs:
+
+```text
+data/<site-name>/request_<path_slug>_<timestamp>_<request_id>.json
+```
+
+System event logs:
+
+```text
+data/_system/events_YYYYMMDD.ndjson
+```
+
+### Request Log Example
 
 ```json
 {
-  "sites": [
-    {
-      "name": "skylive",
-      "hostname": "sky.example.com",
-      "target": "https://live.example.com",
-      "preserveHost": true,
-      "logging": true
-    },
-    {
-      "name": "skyassets",
-      "hostname": "assets.example.com",
-      "target": "https://assets.example.com",
-      "preserveHost": true,
-      "logging": true
-    }
-  ]
-}
-```
-
-## Log Format
-
-Log files are stored per-site with the following path pattern:
-
-```
-data/<site.name>/request_<path_slug>_<timestamp>.json
-```
-
-Examples:
-
-```
-data/skylive/request_root_20260223_150130_126823.json
-data/skylive/request_account_get_friends_20260223_120941_413967.json
-data/skylive/request_account_get_motd_20260411_203347_649000.json
-```
-
-### Log File Structure
-
-```json
-{
-  "timestamp": "2026-02-23T12:09:41.414115",
-  "client_ip": "172.18.0.1",
+  "request_id": "ma7vv8w0-7e3d9f2a",
+  "timestamp": "2026-04-25T05:13:24.212Z",
+  "duration_ms": 149,
+  "client_ip": "127.0.0.1",
+  "site": {
+    "host": "sky.example.com",
+    "route_name": "skylive"
+  },
+  "upstream": {
+    "protocol": "https",
+    "hostname": "live.radiance.thatgamecompany.com",
+    "port": 443,
+    "target": "https://live.radiance.thatgamecompany.com/",
+    "tls_insecure_skip_verify": false
+  },
   "request": {
     "method": "POST",
     "path": "/account/get_friends",
-    "full_url": "https://sky.example.com/account/get_friends",
+    "full_url": "http://sky.example.com/account/get_friends",
     "query_params": {},
-    "headers": { "...": "..." },
+    "headers": {
+      "authorization": "[REDACTED]"
+    },
     "body": {
       "type": "json",
-      "data": { "...": "..." },
-      "size": 348
+      "data": {
+        "id": "..."
+      },
+      "size": 4096,
+      "logged_size": 1024,
+      "truncated": true,
+      "omitted_size": 3072
     }
   },
   "response": {
     "status_code": 200,
     "status_text": "OK",
-    "headers": { "...": "..." },
+    "headers": {},
     "body": {
       "type": "json",
-      "data": { "...": "..." },
-      "size": 19
+      "data": {
+        "ok": true
+      },
+      "size": 26,
+      "logged_size": 26,
+      "truncated": false,
+      "omitted_size": 0
     }
-  }
+  },
+  "traffic": {
+    "request_bytes": 4096,
+    "response_bytes": 26
+  },
+  "error": null
 }
 ```
 
 ### Body Types
 
 | type | Description |
-|------|-------------|
-| `empty` | No request/response body |
-| `json` | JSON format, `data` is a parsed object |
-| `text` | Plain text, `data` is a string |
+|---|---|
+| `empty` | No body |
+| `json` | Parsed JSON |
+| `text` | Plain text |
 | `form` | URL-encoded form |
-| `multipart` | Multipart form |
-| `binary` | Binary data, `data` is a Base64-encoded string |
-
-> When `Content-Type` is `text/plain` but the content is valid JSON, it will be auto-detected and parsed as `json` type.
-
-## Project Structure
-
-```
-forte/
-├── index.js              # Entry point, starts the HTTP server
-├── config.json           # Proxy configuration
-├── package.json
-└── lib/
-    ├── proxy.js          # Core reverse proxy logic
-    ├── router.js         # Host-header-based site routing
-    ├── logger.js         # Request log writer
-    ├── body-parser.js    # Request/response body parsing
-    └── utils.js          # Utility functions
-```
+| `multipart` | Multipart form data (captured raw text segment) |
+| `binary` | Base64 encoded binary |
 
 ## Usage
 
-1. Start the proxy server
-2. Point client requests to this proxy (e.g., by modifying DNS or hosts to resolve the domain to the proxy address)
-3. The proxy forwards requests to the configured upstream and logs complete request/response data to the `data/` directory
+1. Start the proxy server.
+2. Point client requests to this proxy (DNS/hosts).
+3. Inspect `data/` for request logs and `_system` events.
